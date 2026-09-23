@@ -92,6 +92,15 @@ a vision transformer works (patches, visual tokens, the two FFN forms side by si
 steps 1 and 4 of the work order — confirming the real module names, and a preliminary
 dead-feature count for the vision tower. Auto-detects bf16 (L4) vs fp16 (T4).
 
+### Known Colab issue
+
+Colab currently ships a broken NVRTC setup — PyTorch JIT-compiles some reduction kernels
+and cannot find `libnvrtc-builtins.so.13.0`, so any CUDA `.prod()` dies in a wall of
+generated C++. Qwen3-VL's `get_image_features` hits it on every image.
+([googlecolab/colabtools#6111](https://github.com/googlecolab/colabtools/issues/6111).)
+Section **0b** of the notebook symlinks the library into the loader path, tests the exact
+failing op, and carries a CPU fallback for the one tiny reduction involved.
+
 ## Hardware
 
 ```bash
