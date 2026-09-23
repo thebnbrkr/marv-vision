@@ -5,20 +5,26 @@ point of this file is to keep that difference in one place instead of letting it
 leak into every analysis function (the rule MARV's AGENTS.md sets out).
 
     text tower    x -> down_proj( SiLU(gate_proj(x)) * up_proj(x) )      GATED
-    vision tower  x -> fc2( GELU(fc1(x)) )                           NOT GATED
+    vision tower  x -> linear_fc2( GELU(linear_fc1(x)) )             NOT GATED
 
 A feature is one MLP neuron either way:
-    text    feature f = row f of gate_proj, column f of down_proj
-    vision  feature f = row f of fc1,       column f of fc2
+    text    feature f = row f of gate_proj,  column f of down_proj
+    vision  feature f = row f of linear_fc1, column f of linear_fc2
 
 The consequence that matters: `gate_proj` is a pure detector bank, so "which
 features respond to this direction" is a clean question in the text tower. In
-the vision tower `fc1` does detection and magnitude at once, so the same query
-is blurrier. That is a property of the architecture, not a bug to paper over.
+the vision tower `linear_fc1` does detection and magnitude at once, so the same
+query is blurrier. That is a property of the architecture, not a bug to paper over.
 
-EVERY ATTRIBUTE NAME BELOW IS UNVERIFIED. They are read off Qwen3-VL's config
-and the usual HF naming, not off a loaded model. Run scripts/inspect_model.py
-against the real checkpoint and fix them before trusting anything here.
+VERIFIED against Qwen/Qwen3-VL-2B-Instruct on 2026-09-23 (transformers 5.17.0):
+
+    text layers   : model.language_model.layers      28 x Qwen3VLTextDecoderLayer
+                    mlp: gate_proj / up_proj / down_proj      NO bias
+    vision blocks : model.visual.blocks              24 x Qwen3VLVisionBlock
+                    mlp: linear_fc1 / linear_fc2 / act_fn     HAS bias
+
+Note `act_fn` is a *child module* of the vision MLP, so "the last named child"
+is NOT the second matrix. Name the matrices explicitly.
 """
 from __future__ import annotations
 
@@ -43,30 +49,27 @@ class TowerSpec:
 
 
 # --- candidate attribute paths ------------------------------------------------
-# Ordered by how likely they are on a current transformers build. inspect_model.py
-# walks these and reports which one actually resolves; the rest are kept so the
-# adapter survives a rename upstream instead of failing with an AttributeError
-# three call-frames deep.
+# The first entry of each tuple is the VERIFIED one; the rest are kept so a
+# rename upstream degrades into a clear report from describe_model() instead of
+# an AttributeError three call-frames deep.
 
 TEXT_LAYERS_PATHS = (
-    "model.language_model.layers",
+    "model.language_model.layers",  # verified
     "model.language_model.model.layers",
     "language_model.model.layers",
     "model.layers",
 )
 
 VISION_BLOCKS_PATHS = (
-    "model.visual.blocks",
+    "model.visual.blocks",  # verified
     "visual.blocks",
     "model.vision_tower.blocks",
 )
 
-# (gate, up, down) on a text MLP
-TEXT_MLP_ATTRS = ("gate_proj", "up_proj", "down_proj")
+TEXT_MLP_ATTRS = ("gate_proj", "up_proj", "down_proj")  # verified
 
-# (fc1, fc2) on a vision MLP -- Qwen has used both spellings across versions
 VISION_MLP_ATTRS = (
-    ("linear_fc1", "linear_fc2"),
+    ("linear_fc1", "linear_fc2"),  # verified
     ("fc1", "fc2"),
     ("up_proj", "down_proj"),
 )
@@ -91,12 +94,113 @@ def find_first(root, paths):
     return None, None
 
 
-def describe_model(model) -> dict:
-    """Print what is ACTUALLY there and return the resolved paths.
+# --- adapters -----------------------------------------------------------------
 
-    This is step 1 of the whole project. Until it runs against the real
-    checkpoint, every name in this file is a guess.
+
+class TowerFFN:
+    """Common surface: layers, and the two matrices that bracket the activation.
+
+    `first` is the matrix whose ROWS are features (detector side).
+    `second` is the matrix whose COLUMNS are features (write side) -- the one to
+    hook with a forward_pre_hook to see POST-activation values, and the one whose
+    column norm says how much a feature can actually move the residual.
     """
+
+    tower: str
+    gated: bool
+
+    def __init__(self, model):
+        self.model = model
+        self.path, self.layers = find_first(model, self._paths)
+        if self.layers is None:
+            raise AttributeError(
+                f"could not find the {self.tower} tower on this model; tried {self._paths}. "
+                "Run marv_vision.arch.describe_model(model) and add the real path."
+            )
+
+    def __len__(self) -> int:
+        return len(self.layers)
+
+    def mlp(self, layer: int):
+        return self.layers[layer].mlp
+
+    def first(self, layer: int):
+        raise NotImplementedError
+
+    def second(self, layer: int):
+        raise NotImplementedError
+
+    def features(self, layer: int) -> int:
+        return self.first(layer).weight.shape[0]
+
+    def write_norms(self, layer: int):
+        """L2 norm of each feature's output column: how much it CAN move the
+        residual, independent of whether it fired. A neuron with a big activation
+        and a tiny column contributes nothing."""
+        return self.second(layer).weight.detach().float().norm(dim=0)
+
+
+class TextTowerFFN(TowerFFN):
+    """Llama-style gated FFN. MARV's existing machinery applies unchanged."""
+
+    tower = "text"
+    gated = True
+    _paths = TEXT_LAYERS_PATHS
+
+    def gate(self, layer: int):
+        return self.mlp(layer).gate_proj
+
+    def up(self, layer: int):
+        return self.mlp(layer).up_proj
+
+    def first(self, layer: int):
+        return self.gate(layer)  # the detector half
+
+    def second(self, layer: int):
+        return self.mlp(layer).down_proj
+
+
+class VisionTowerFFN(TowerFFN):
+    """Two-matrix GELU FFN: linear_fc1 -> act_fn -> linear_fc2.
+
+    No gate, so there is no pure-detector matrix; `first` does detection and
+    magnitude at once. Both matrices carry a bias (the text tower's do not).
+    """
+
+    tower = "vision"
+    gated = False
+    _paths = VISION_BLOCKS_PATHS
+
+    def __init__(self, model):
+        super().__init__(model)
+        mlp = self.mlp(0)
+        self.attrs = next(
+            (p for p in VISION_MLP_ATTRS if all(hasattr(mlp, a) for a in p)), None
+        )
+        if self.attrs is None:
+            raise AttributeError(
+                f"vision MLP has none of {VISION_MLP_ATTRS}; it has "
+                f"{[n for n, _ in mlp.named_children()]}"
+            )
+
+    def first(self, layer: int):
+        return getattr(self.mlp(layer), self.attrs[0])
+
+    def second(self, layer: int):
+        # NOT named_children()[-1] -- that is act_fn on this model.
+        return getattr(self.mlp(layer), self.attrs[1])
+
+
+def towers(model) -> dict[str, TowerFFN]:
+    """Both towers, ready to use."""
+    return {"text": TextTowerFFN(model), "vision": VisionTowerFFN(model)}
+
+
+# --- inspection ---------------------------------------------------------------
+
+
+def describe_model(model) -> dict:
+    """Print what is ACTUALLY there and return the resolved paths."""
     out: dict = {}
 
     tpath, tlayers = find_first(model, TEXT_LAYERS_PATHS)
@@ -111,21 +215,27 @@ def describe_model(model) -> dict:
     if tlayers is not None and len(tlayers):
         mlp = getattr(tlayers[0], "mlp", None)
         print(f"\ntext  mlp type: {type(mlp).__name__}")
-        print(f"      attrs   : {[a for a in dir(mlp) if 'proj' in a or 'fc' in a]}")
+        print(f"      children: {[n for n, _ in mlp.named_children()]}")
         found = all(hasattr(mlp, a) for a in TEXT_MLP_ATTRS)
         out["text_mlp_attrs"] = TEXT_MLP_ATTRS if found else None
         print(f"      gated ({'/'.join(TEXT_MLP_ATTRS)}) present: {found}")
 
     if vblocks is not None and len(vblocks):
         mlp = getattr(vblocks[0], "mlp", None)
+        kids = [n for n, _ in mlp.named_children()]
         print(f"\nvision mlp type: {type(mlp).__name__}")
-        print(f"       attrs   : {[a for a in dir(mlp) if 'proj' in a or 'fc' in a]}")
+        print(f"       children: {kids}")
         hit = next((p for p in VISION_MLP_ATTRS if all(hasattr(mlp, a) for a in p)), None)
         out["vision_mlp_attrs"] = hit
         print(f"       resolved: {hit}")
+        if hit and kids and kids[-1] != hit[1]:
+            print(
+                f"       NOTE: last child is {kids[-1]!r}, NOT the second matrix "
+                f"({hit[1]!r}). Never index children by position."
+            )
         if hit is None:
-            print("       !! none of the candidate spellings matched -- add the")
-            print("          real one to VISION_MLP_ATTRS in marv_vision/arch.py")
+            print("       !! no candidate spelling matched -- add the real one to")
+            print("          VISION_MLP_ATTRS in marv_vision/arch.py")
 
     print("=" * 70)
     return out

@@ -12,9 +12,10 @@ baseline for the [nuReasoning](https://arxiv.org/abs/2605.31572) driving benchma
 The question: **which parts of a driving foundation model changed when it was
 fine-tuned, and what broke when we edited them.**
 
-> **Status: scaffold.** Nothing here has run against the real checkpoint. Every
-> attribute name in `marv_vision/arch.py` is a hypothesis read off `config.json`.
-> `scripts/inspect_model.py` is the bridge to the real model — run it first.
+> **Status: paths verified, first measurement retracted.** Run 1 (L4, transformers
+> 5.17.0, `results/run1/`) confirmed every module path, so `arch.py` now holds real
+> names rather than guesses. Its dead-feature number was **wrong** and has been
+> withdrawn — see *Run 1* below.
 
 ## Why this is a separate repo
 
@@ -83,6 +84,31 @@ and trajectory attribution for a diffusion action head.
    data, and is a precondition for any feature-labeling work — marv-hyena found
    18% of Evo 2's first layer dead, and one round's headline finding had been
    built on a dead channel.
+
+## Run 1 (2026-09-23, L4)
+
+Confirmed against `Qwen/Qwen3-VL-2B-Instruct`, transformers 5.17.0, torch 2.11.0+cu130:
+
+```
+text layers   : model.language_model.layers   28 x Qwen3VLTextDecoderLayer
+                mlp: gate_proj / up_proj / down_proj        no bias
+vision blocks : model.visual.blocks           24 x Qwen3VLVisionBlock
+                mlp: linear_fc1 / linear_fc2 / act_fn       has bias
+```
+
+Model loads at 2.13B params / 4.3 GB on an L4 and answers correctly. A single 960x686
+image becomes **630 of 644 sequence tokens** — 98% visual, which is where the memory
+goes on real driving clips.
+
+**The dead-feature result from run 1 is withdrawn.** The hook took the MLP's last named
+child, which is `act_fn`, not `linear_fc2` — so it measured *pre*-activation values and
+reported 0.0% dead at every layer. Two fixes: name the matrix explicitly (`arch.py`
+`VisionTowerFFN.second()`, with a note in `describe_model` when the last child is not the
+second matrix), and drop the `|act| < 1e-6` test, which is meaningless for GELU — it has
+no exact-zero floor and `linear_fc1` carries a bias. Section 7 now measures peak
+post-activation and **contribution** (peak x ‖`linear_fc2`[:, f]‖), reports a
+distribution rather than a binary, and **checks that the hooked values respect GELU's
+~-0.17 floor** before reporting anything.
 
 ## Notebook
 
