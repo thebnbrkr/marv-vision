@@ -84,6 +84,14 @@ and trajectory attribution for a diffusion action head.
    18% of Evo 2's first layer dead, and one round's headline finding had been
    built on a dead channel.
 
+## Notebook
+
+[`notebooks/marv_vision_qwen3vl_colab.ipynb`](notebooks/marv_vision_qwen3vl_colab.ipynb) —
+**Runtime -> Change runtime type -> L4 GPU.** It does double duty: a hands-on tour of how
+a vision transformer works (patches, visual tokens, the two FFN forms side by side) and
+steps 1 and 4 of the work order — confirming the real module names, and a preliminary
+dead-feature count for the vision tower. Auto-detects bf16 (L4) vs fp16 (T4).
+
 ## Hardware
 
 ```bash
