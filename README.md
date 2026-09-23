@@ -110,6 +110,21 @@ post-activation and **contribution** (peak x ‖`linear_fc2`[:, f]‖), reports 
 distribution rather than a binary, and **checks that the hooked values respect GELU's
 ~-0.17 floor** before reporting anything.
 
+## Tests
+
+```bash
+pip install "transformers>=4.57,<5"     # 5.x needs torch >= 2.5
+python -m pytest tests/ -q              # 12 tests, ~4 s, CPU, no GPU
+```
+
+Tests run against **`trl-internal-testing/tiny-Qwen3VLForConditionalGeneration`** — a real
+`Qwen3VLForConditionalGeneration` with 3.4M parameters (~14 MB). Same model class, same
+module names, same child ordering as the 2B checkpoint, so it cannot drift from the real
+architecture the way a hand-written fake would.
+
+Every bug that has cost a Colab run is a test here. Reintroducing the run-2 hook bug
+(`named_children()[-1]`) fails 5 of them in 4 seconds.
+
 ## Before spending a GPU run
 
 ```bash

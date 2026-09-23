@@ -116,6 +116,22 @@ tests/
 notebooks/
 ```
 
+## Test locally before touching Colab
+
+```bash
+pip install "transformers>=4.57,<5"     # 5.x needs torch >= 2.5, this repo's Mac has 2.4
+python -m pytest tests/ -q              # 12 tests, ~4 s, CPU
+python scripts/check_notebook.py notebooks/*.ipynb
+```
+
+Tests load **`trl-internal-testing/tiny-Qwen3VLForConditionalGeneration`**: a genuine
+`Qwen3VLForConditionalGeneration` at 3.4M params, ~14 MB, CPU, seconds. Prefer it over a
+hand-written stand-in — it is the real model class, so its module names and child ordering
+cannot drift from the checkpoint being studied. It reproduces the `act_fn`-as-last-child
+trap exactly.
+
+**Anything that does not need real weights gets a test here before it gets a GPU run.**
+
 ## Before spending a GPU run
 
 ```bash
