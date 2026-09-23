@@ -1,0 +1,8 @@
+[project]
+name = "marv-vision"
+version = "0.0.1"
+description = "MARV's edit-and-measure interpretability approach, applied to vision-language models"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["marv_vision*"]

@@ -1,0 +1,8 @@
+# Qwen3-VL needs transformers >= 4.57 (Qwen3VLForConditionalGeneration).
+# The local env at scaffold time had 4.47.1, which is too old.
+transformers>=4.57.0
+torch>=2.4.0
+numpy>=1.24
+safetensors>=0.4
+accelerate>=0.30
+pillow>=10.0
