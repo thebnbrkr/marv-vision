@@ -116,6 +116,32 @@ tests/
 notebooks/
 ```
 
+## Before spending a GPU run
+
+```bash
+python scripts/check_notebook.py notebooks/*.ipynb
+```
+
+Colab runs are a limited resource and two have already been lost to bugs that a
+laptop could have caught. The checker simulates top-to-bottom execution and fails on:
+
+- a name used before any cell defines it (this is what killed run 3 -- rewriting a
+  section deleted the cell defining `IMAGES`)
+- indexing `named_children()` / `children()` by position (this is what killed run 2 --
+  the vision MLP's last child is `act_fn`, not `linear_fc2`, so the hook measured
+  pre-activation values and reported a confident, wrong 0.0% dead)
+
+**Run it after every notebook edit.** It cannot check anything needing the real model;
+it can check everything that does not, and that is where both failures lived.
+
+Two habits that follow from the same two runs:
+
+- **Never address a submodule by position.** Name it.
+- **Every measurement cell asserts its own precondition before reporting.** The
+  post-activation cell checks the values respect GELU's ~-0.17 floor first. Run 2
+  printed `hooking vision mlp.act_fn (the second matrix)` -- self-contradictory, in the
+  output, unread. A check that has to be noticed is not a check.
+
 ## Order of work
 
 1. `scripts/inspect_model.py` — confirm the real attribute names. Nothing else

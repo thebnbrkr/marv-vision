@@ -110,6 +110,15 @@ post-activation and **contribution** (peak x ‖`linear_fc2`[:, f]‖), reports 
 distribution rather than a binary, and **checks that the hooked values respect GELU's
 ~-0.17 floor** before reporting anything.
 
+## Before spending a GPU run
+
+```bash
+python scripts/check_notebook.py notebooks/*.ipynb
+```
+
+Static check: undefined names across cells, and submodules addressed by position.
+Both of this repo's wasted Colab runs would have been caught here, on a laptop, for free.
+
 ## Notebook
 
 [`notebooks/marv_vision_qwen3vl_colab.ipynb`](notebooks/marv_vision_qwen3vl_colab.ipynb) —
